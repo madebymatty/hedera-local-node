@@ -12,13 +12,18 @@ services:
     image: "${NETWORK_NODE_IMAGE_PREFIX}${NETWORK_NODE_IMAGE_NAME}:${NETWORK_NODE_IMAGE_TAG}"
     container_name: network-node
     user: root
+    restart: unless-stopped
     mem_swappiness: 0
     mem_limit: "${NETWORK_NODE_MEM_LIMIT}"
     memswap_limit: "${NETWORK_NODE_MEM_LIMIT}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       JAVA_HEAP_MIN: "${PLATFORM_JAVA_HEAP_MIN}"
       JAVA_HEAP_MAX: "${PLATFORM_JAVA_HEAP_MAX}"
-      JAVA_OPTS: "${PLATFORM_JAVA_OPTS}"
+      JAVA_OPTS: "${PLATFORM_JAVA_OPTS} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/opt/hgcapp/logs/heapdump.hprof -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:InitiatingHeapOccupancyPercent=70"
     healthcheck:
       test:
         [
@@ -28,10 +33,15 @@ services:
           "Now current platform status = ACTIVE|Hedera - HederaNode#0 is ACTIVE",
           "/opt/hgcapp/services-hedera/HapiApp2.0/output/hgcaa.log"
         ]
-      interval: 30s
+      interval: 15s
       timeout: 10s
-      retries: 10
-      start_period: 10s
+      retries: 20
+      start_period: 300s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
     depends_on:
       haveged:
         condition: service_started
@@ -137,17 +147,19 @@ services:
     image: "${UPLOADER_IMAGE_PREFIX}uploader-mirror:${UPLOADER_IMAGE_TAG}"
     container_name: record-sidecar-uploader
     user: root
-    restart: unless-stopped
+    restart: always
     depends_on:
       minio:
-        condition: service_started
+        condition: service_healthy
     networks:
       - cloud-storage
     environment:
       DEBUG: "true"
+      # Reaper settings for better data retention
       REAPER_ENABLE: "true"
-      REAPER_MIN_KEEP: "1"
-      REAPER_INTERVAL: "5"
+      REAPER_MIN_KEEP: "24"  # Keep at least 24 hours of records
+      REAPER_INTERVAL: "60"  # Check every hour
+      # Upload settings
       S3_ENABLE: "true"
       GCS_ENABLE: "false"
       SIG_REQUIRE: "false"
@@ -157,8 +169,22 @@ services:
       BUCKET_PATH: "recordstreams/record0.0.3/sidecar"
       S3_ACCESS_KEY: "minioadmin"
       S3_SECRET_KEY: "minioadmin"
+      # Retry settings
+      MAX_RETRIES: "5"
+      RETRY_DELAY: "30"
+      UPLOAD_TIMEOUT: "300"
+      # Buffer settings
+      BUFFER_SIZE: "104857600"  # 100MB buffer
+      MAX_CONCURRENT_UPLOADS: "3"
+    healthcheck:
+      test: ["CMD", "ps", "aux", "|", "grep", "mirror.py", "|", "grep", "-v", "grep"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     volumes:
-      - "${NETWORK_NODE_LOGS_ROOT_PATH}/recordStreams/record0.0.3/sidecar:/sidecar-files"
+      - "${NETWORK_NODE_LOGS_ROOT_PATH}/recordStreams/record0.0.3/sidecar:/sidecar-files:rw"
+      - "${NETWORK_NODE_LOGS_ROOT_PATH}/recordStreams/record0.0.3/backup:/backup-files:rw"
     command:
       - /usr/bin/env
       - ${PYTHON_VERSION}
@@ -166,20 +192,40 @@ services:
       - --linux
       - --watch-directory
       - /sidecar-files
+      - --backup-directory
+      - /backup-files
       - --s3-endpoint
       - http://minio:9000
+      - --retry-failed
+      - --verify-upload
       - --debug
 
   minio:
     image: ghcr.io/mhga24/minio/minio
     container_name: minio
     entrypoint: sh
-    command: -c 'mkdir -p /data/hedera-streams && minio server /data --console-address ":9001"'
+    command: -c 'mkdir -p /data/hedera-streams && minio server /data --console-address ":9001" --address ":9000"'
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD}"
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
+      MINIO_BROWSER_REDIRECT_URL: http://localhost:9001
+      MINIO_COMPRESSION_ENABLE: "on"
+      MINIO_COMPRESSION_EXTENSIONS: ".txt,.log,.csv,.json,.tar,.xml,.bin"
+      MINIO_COMPRESSION_MIME_TYPES: "text/*,application/json,application/xml,application/octet-stream"
+      MINIO_CACHE_DRIVES: "/data/cache"
+      MINIO_CACHE_EXCLUDE: "*.pdf,*.mp4"
+      MINIO_CACHE_QUOTA: "80"
+      MINIO_CACHE_AFTER: "0"
+      MINIO_CACHE_WATERMARK_LOW: "70"
+      MINIO_CACHE_WATERMARK_HIGH: "90"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
     networks:
       - cloud-storage
     ports:
@@ -187,6 +233,11 @@ services:
       - "9001:9001"
     volumes:
       - "minio-data:/data"
+      - "minio-cache:/data/cache"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
   db:
     image: "${MIRROR_POSTGRES_IMAGE}"
@@ -200,6 +251,23 @@ services:
       POSTGRES_PASSWORD: postgres_password
       REST_PASSWORD: mirror_api_pass
       ROSETTA_PASSWORD: mirror_rosetta_pass
+      # Performance Tuning
+      POSTGRES_SHARED_BUFFERS: 2GB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 6GB
+      POSTGRES_MAINTENANCE_WORK_MEM: 512MB
+      POSTGRES_RANDOM_PAGE_COST: 1.1
+      POSTGRES_EFFECTIVE_IO_CONCURRENCY: 200
+      POSTGRES_WORK_MEM: 16MB
+      POSTGRES_MAX_WORKER_PROCESSES: 8
+      POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER: 4
+      POSTGRES_MAX_PARALLEL_WORKERS: 8
+      POSTGRES_MAX_PARALLEL_MAINTENANCE_WORKERS: 4
+      POSTGRES_CHECKPOINT_COMPLETION_TARGET: 0.9
+      POSTGRES_SYNCHRONOUS_COMMIT: 'off'
+      POSTGRES_MAX_WAL_SIZE: 4GB
+      POSTGRES_MIN_WAL_SIZE: 2GB
+      POSTGRES_WAL_BUFFERS: 16MB
+      POSTGRES_DEFAULT_STATISTICS_TARGET: 500
     networks:
       - mirror-node
     ports:
@@ -208,11 +276,30 @@ services:
     stop_grace_period: 2m
     stop_signal: SIGTERM
     tty: true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      memlock:
+        soft: -1
+        hard: -1
+    mem_swappiness: 0
+    mem_limit: "8G"
     volumes:
       - ./compose-network/mirror-node/init.sh:/docker-entrypoint-initdb.d/init.sh
       - type: volume
         source: mirror-node-postgres
         target: /var/lib/postgresql/data
+      - type: tmpfs
+        target: /dev/shm
+        tmpfs:
+          size: 2g
 
   grpc:
     image: "${MIRROR_IMAGE_PREFIX}hedera-mirror-grpc:${MIRROR_GRPC_IMAGE_TAG:-${MIRROR_IMAGE_TAG}}"
@@ -548,6 +635,8 @@ volumes:
     name: mirror-node-postgres
   minio-data:
     name: minio-data
+  minio-cache:
+    name: minio-cache
   prometheus-data:
     name: prometheus-data
   grafana-data:
