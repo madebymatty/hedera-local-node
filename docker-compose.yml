@@ -204,7 +204,7 @@ services:
     image: ghcr.io/mhga24/minio/minio
     container_name: minio
     entrypoint: sh
-    command: -c 'mkdir -p /data/hedera-streams && minio server /data --console-address ":9001" --address ":9000"'
+    command: -c 'mkdir -p /minio/data/hedera-streams && minio server /minio/data --console-address ":9001" --address ":9000"'
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD}"
@@ -214,12 +214,6 @@ services:
       MINIO_COMPRESSION_ENABLE: "on"
       MINIO_COMPRESSION_EXTENSIONS: ".txt,.log,.csv,.json,.tar,.xml,.bin"
       MINIO_COMPRESSION_MIME_TYPES: "text/*,application/json,application/xml,application/octet-stream"
-      MINIO_CACHE_DRIVES: "/data/cache"
-      MINIO_CACHE_EXCLUDE: "*.pdf,*.mp4"
-      MINIO_CACHE_QUOTA: "80"
-      MINIO_CACHE_AFTER: "0"
-      MINIO_CACHE_WATERMARK_LOW: "70"
-      MINIO_CACHE_WATERMARK_HIGH: "90"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -232,8 +226,7 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - "minio-data:/data"
-      - "minio-cache:/data/cache"
+      - "minio-data:/minio/data"
     ulimits:
       nofile:
         soft: 65536
