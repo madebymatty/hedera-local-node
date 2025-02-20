@@ -80,8 +80,8 @@ services:
     environment:
       DEBUG: "true"
       REAPER_ENABLE: "true"
-      REAPER_MIN_KEEP: "1"
-      REAPER_INTERVAL: "5"
+      REAPER_MIN_KEEP: "100"
+      REAPER_INTERVAL: "60"
       S3_ENABLE: "true"
       GCS_ENABLE: "false"
       SIG_REQUIRE: "true"
@@ -118,8 +118,8 @@ services:
     environment:
       DEBUG: "true"
       REAPER_ENABLE: "true"
-      REAPER_MIN_KEEP: "1"
-      REAPER_INTERVAL: "5"
+      REAPER_MIN_KEEP: "100"
+      REAPER_INTERVAL: "60"
       S3_ENABLE: "true"
       GCS_ENABLE: "false"
       SIG_REQUIRE: "true"
@@ -156,8 +156,8 @@ services:
     environment:
       DEBUG: "true"
       REAPER_ENABLE: "true"
-      REAPER_MIN_KEEP: "1"
-      REAPER_INTERVAL: "5"
+      REAPER_MIN_KEEP: "100"
+      REAPER_INTERVAL: "60"
       S3_ENABLE: "true"
       GCS_ENABLE: "false"
       SIG_REQUIRE: "false"
